@@ -107,6 +107,12 @@ static int previous_type;
 #ifdef MINIVOLD
 inline int release_wake_lock(const char* id) { return 0; }
 inline int acquire_wake_lock(int lock, const char* id) { return 0; }
+
+static const char* kMkExt4fsPath = "/sbin/mke2fs";
+static const char* kMkF2fsPath = "/sbin/mkfs.f2fs";
+#else
+static const char* kMkExt4fsPath = "/system/bin/make_ext4fs";
+static const char* kMkF2fsPath = "/system/bin/mkfs.f2fs";
 #endif
 
 #ifdef CONFIG_HW_DISK_ENCRYPTION
@@ -149,6 +155,47 @@ static int verify_hw_fde_passwd(char *passwd, struct crypt_mnt_ftr* crypt_ftr)
     return key_index;
 }
 
+char* fix_broken_cm12_pattern(const char* passwd)
+{
+    size_t index, length;
+    bool is_broken = 0;
+
+    if (!passwd) {
+        return NULL;
+    }
+
+    length = strlen(passwd);
+
+    // Check password can be a broken cm12 pattern - it has something
+    // that isn't a 1-9 digit.
+
+    for (index = 0; index < length; index ++) {
+        if (passwd[index] < '1' || passwd[index] > '9') {
+            is_broken = 1;
+        }
+    }
+    if (!is_broken) return NULL;
+
+    // Allocate room for adjusted passwd and null terminate
+    char* adjusted = malloc((length*2) + 1);
+    unsigned int i, a;
+    unsigned char nibble;
+
+    for (i=0, a=0; i<length; i++, a+=2) {
+        /* For each byte, write out two ascii hex digits */
+        nibble = (passwd[i] >> 4) & 0xf;
+        adjusted[a] = nibble + (nibble > 10 ? 0x2c : 0x2d);
+
+        nibble = passwd[i] & 0xf;
+        if (!nibble) { nibble=0x10; adjusted[a]--; };
+        adjusted[a+1] = nibble + (nibble > 10 ? 0x56 : 0x2f);
+    }
+
+    adjusted[a] = '\0';
+
+    return adjusted;
+}
+
 static int verify_and_update_hw_fde_passwd(char *passwd,
                                            struct crypt_mnt_ftr* crypt_ftr)
 {
@@ -180,13 +227,18 @@ static int verify_and_update_hw_fde_passwd(char *passwd,
                 }
                 strlcpy(new_passwd, DEFAULT_HEX_PASSWORD, strlen(DEFAULT_HEX_PASSWORD) + 1);
             } else {
-                new_passwd = (char*)malloc(strlen(passwd) * 2 + 1);
-                if (new_passwd == NULL) {
-                    SLOGE("System out of memory. Password verification  incomplete");
-                    goto out;
+                if (crypt_ftr->crypt_type == CRYPT_TYPE_PATTERN) {
+                    new_passwd = fix_broken_cm12_pattern(passwd);
                 }
-                convert_key_to_hex_ascii((const unsigned char*)passwd,
+                if (new_passwd == NULL) { // not an old broken pattern
+                    new_passwd = (char*)malloc(strlen(passwd) * 2 + 1);
+                    if (new_passwd == NULL) {
+                        SLOGE("System out of memory. Password verification  incomplete");
+                        goto out;
+                    }
+                    convert_key_to_hex_ascii((const unsigned char*)passwd,
                                        strlen(passwd), new_passwd);
+                }
             }
             key_index = set_hw_device_encryption_key((const char*)new_passwd,
                                        (char*) crypt_ftr->crypto_type_name);
@@ -2376,7 +2428,7 @@ static int cryptfs_enable_wipe(char *crypto_blkdev, off64_t size, int type)
     int rc = -1;
 
     if (type == EXT4_FS) {
-        args[0] = "/system/bin/make_ext4fs";
+        args[0] = kMkExt4fsPath;
         args[1] = "-a";
         args[2] = "/data";
         args[3] = "-l";
@@ -2387,7 +2439,7 @@ static int cryptfs_enable_wipe(char *crypto_blkdev, off64_t size, int type)
         SLOGI("Making empty filesystem with command %s %s %s %s %s %s\n",
               args[0], args[1], args[2], args[3], args[4], args[5]);
     } else if (type == F2FS_FS) {
-        args[0] = "/system/bin/mkfs.f2fs";
+        args[0] = kMkF2fsPath;
         args[1] = "-t";
         args[2] = "-d1";
         args[3] = crypto_blkdev;
