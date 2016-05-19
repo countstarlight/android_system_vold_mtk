@@ -67,7 +67,7 @@ void CommandListener::dumpArgs(int argc, char **argv, int argObscure) {
         if (i == argObscure) {
             len += 2; // Account for {}
         }
-        if (((p - buffer) + len) < (sizeof(buffer)-1)) {
+        if (((unsigned int)(p - buffer) + len) < (unsigned int)(sizeof(buffer)-1)) {
             if (i == argObscure) {
                 *p++ = '{';
                 *p++ = '}';
